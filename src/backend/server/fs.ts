@@ -14,7 +14,7 @@ import {
 import { resolveShare } from "../internal/op/share"
 import { resolvePath } from "../internal/model/db"
 import { getUserFromContext } from "./middlewares"
-import { canWrite, getActualPath, isAdmin } from "../pkg/permission"
+import { canWrite, getActualPath, isAdmin, isGuest } from "../pkg/permission"
 import { getSignPolicy, signDownloadPath } from "../pkg/sign"
 import { safeErrorMessage } from "../pkg/errs"
 import { search } from "../internal/op/search"
@@ -789,6 +789,14 @@ fsRouter.post("/upload/complete", async (c) => {
       data: null,
     })
   }
+  // FIX: Validate partMd5s is an array before passing to driver
+  if (!Array.isArray(partMd5s)) {
+    return c.json({
+      code: 400,
+      message: "partMd5s must be an array",
+      data: null,
+    })
+  }
   try {
     const resolved = await resolvePath(dirPath)
     if (resolved.isVirtual) {
@@ -819,6 +827,10 @@ fsRouter.post("/add_offline_download", async (c) => {
   if (!user || user.disabled) {
     return c.json({ code: 401, message: "Unauthorized", data: null }, 401)
   }
+  // FIX: Guests must not be able to submit offline download tasks
+  if (isGuest(user)) {
+    return c.json({ code: 403, message: "Permission denied", data: null }, 403)
+  }
   const { path: rawPath, urls } = await c.req.json().catch(() => ({}))
   const reqPath = getActualPath(user, rawPath || "/")
   if (!urls || urls.length === 0) {
@@ -844,6 +856,10 @@ fsRouter.post("/search", async (c) => {
   const user = await getUserFromContext(c)
   if (!user || user.disabled) {
     return c.json({ code: 401, message: "Unauthorized", data: null }, 401)
+  }
+  // FIX: Guests must not be able to search across storages
+  if (isGuest(user)) {
+    return c.json({ code: 403, message: "Permission denied", data: null }, 403)
   }
   const body = await c.req.json().catch(() => ({}))
   const parentPath = getActualPath(user, body.parent || "/")

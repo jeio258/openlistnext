@@ -1162,9 +1162,24 @@ export const saveDb = async (data: any, envCtx?: any): Promise<boolean> => {
     return false
   }
 
+  // FIX (Race condition): Read the latest KV state before writing to prevent
+  // concurrent requests from silently overwriting each other's changes.
+  // Without this, two requests reading the same DB snapshot could both write
+  // back independently, causing one set of changes to be lost.
+  let mergedData: any = data
+  try {
+    const latestFromKv = await readFromKv(kvInfo, "openlistnext_config")
+    if (latestFromKv) {
+      mergedData = mergeDbSnapshot(latestFromKv, data)
+    }
+  } catch {
+    // If KV read fails, fall through with the caller's data directly.
+    // This preserves existing behavior when KV is unhealthy.
+  }
+
   let success = false
   try {
-    success = await saveToKv(kvInfo, "openlistnext_config", data)
+    success = await saveToKv(kvInfo, "openlistnext_config", mergedData)
   } catch (err) {
     console.error("[DB] Failed to save to KV:", err)
     success = false
@@ -1177,9 +1192,40 @@ export const saveDb = async (data: any, envCtx?: any): Promise<boolean> => {
   }
 
   console.log(
-    `[DB] Successfully persisted ${data.storages?.length || 0} storages to KV (${kvInfo.platform})`,
+    `[DB] Successfully persisted ${mergedData.storages?.length || 0} storages to KV (${kvInfo.platform})`,
   )
   return true
+}
+
+/**
+ * Merge a new DB snapshot into the latest KV snapshot to prevent lost updates.
+ * Preserves items only present in the KV (e.g., shares created by other requests)
+ * while applying updates from the caller's snapshot.
+ */
+function mergeDbSnapshot(latest: any, incoming: any): any {
+  const mergeArray = <T>(latestArr: T[] | null, incomingArr: T[] | null, keyField: string): T[] => {
+    if (!incomingArr) return (latestArr || []) as T[]
+    if (!latestArr) return incomingArr as T[]
+    const latestMap = new Map<string, T>()
+    for (const item of latestArr) {
+      const k = (item as any)[keyField]
+      if (k !== undefined && k !== null) latestMap.set(String(k), item)
+    }
+    for (const item of incomingArr) {
+      const k = (item as any)[keyField]
+      if (k !== undefined && k !== null) latestMap.set(String(k), item)
+    }
+    return Array.from(latestMap.values())
+  }
+
+  return {
+    settings: mergeArray(latest.settings, incoming.settings, "key"),
+    users: mergeArray(latest.users, incoming.users, "id"),
+    storages: mergeArray(latest.storages, incoming.storages, "id"),
+    metas: mergeArray(latest.metas, incoming.metas, "id"),
+    shares: mergeArray(latest.shares, incoming.shares, "id"),
+    plugins: mergeArray(latest.plugins, incoming.plugins, "id"),
+  }
 }
 
 export async function getKvStatus(envCtx?: any) {
@@ -1215,8 +1261,8 @@ export async function getKvStatus(envCtx?: any) {
   }
 }
 
-export async function resolvePath(virtualPath: string) {
-  const db = await getDb()
+export async function resolvePath(virtualPath: string, envCtx?: any) {
+  const db = await getDb(envCtx)
 
   // Normalize ".." / "." segments so callers cannot escape the storage
   // mount root (path traversal). A leading ".." that pops an empty stack

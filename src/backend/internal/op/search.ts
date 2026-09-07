@@ -44,12 +44,14 @@ export async function search(
 
   const matches: SearchResultItem[] = []
 
+  // FIX: pass env through the recursive walk so listItems always resolves
+  // against the correct KV binding instead of falling back to globalEnvCtx.
   async function walk(dirPath: string, depth: number) {
     if (depth > maxDepth || matches.length >= maxResults) return
 
     let items: FileItem[] = []
     try {
-      const res = await listItems(dirPath)
+      const res = await listItems(dirPath, undefined, env)
       items = res.content || []
     } catch {
       // If listing this branch fails (e.g. storage offline), continue search elsewhere

@@ -834,8 +834,9 @@ export async function flushPendingDriverState(
 export async function listItems(
   virtualPath: string,
   requestContext?: StorageRequestContext,
+  envCtx?: any,
 ): Promise<{ content: FileItem[]; provider: string; storage?: any }> {
-  const resolved = await resolvePath(virtualPath)
+  const resolved = await resolvePath(virtualPath, envCtx)
   let items: FileItem[] = []
   let driverName = "Virtual"
 
